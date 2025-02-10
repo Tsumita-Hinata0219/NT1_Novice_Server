@@ -1,13 +1,14 @@
 #include <Novice.h>
 #include <math.h>
-#include <process.h>
 #include <mmsystem.h>
+#include <process.h>
 
 #pragma comment(lib, "wsock32.lib")
 #pragma comment(lib, "winmm.lib")
 
 DWORD WINAPI threadfunc(void*);
-SOCKET sWait;
+SOCKET sock;
+bool bSocket = false;
 HWND hwMain;
 
 const char kWindowTitle[] = "KAMATA ENGINEサーバ";
@@ -15,18 +16,18 @@ const char kWindowTitle[] = "KAMATA ENGINEサーバ";
 typedef struct {
 	float x;
 	float y;
-}Vector2;
+} Vector2;
 
 typedef struct {
 	Vector2 center;
 	float radius;
-}Circle;
+} Circle;
 
 // キー入力結果を受け取る箱
 Circle a, b;
-Vector2 center = { 100,100 };
-char keys[256] = { 0 };
-char preKeys[256] = { 0 };
+Vector2 center = {100, 100};
+char keys[256] = {0};
+char preKeys[256] = {0};
 int color = RED;
 
 // Windowsアプリでのエントリーポイント(main関数)
@@ -35,7 +36,6 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 	WSADATA wdData;
 	static HANDLE hThread;
 	static DWORD dwID;
-
 
 	// ライブラリの初期化
 	Novice::Initialize(kWindowTitle, 800, 600);
@@ -54,7 +54,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 	WSAStartup(MAKEWORD(2, 0), &wdData);
 
 	// データを送受信処理をスレッド（WinMainの流れに関係なく動作する処理の流れ）として生成。
-	hThread = (HANDLE)CreateThread(NULL, 0, &threadfunc, (LPVOID)&a , 0, &dwID);
+	// データ送受信をスレッドにしないと何かデータを受信するまでRECV関数で止まってしまう。
+	hThread = (HANDLE)CreateThread(NULL, 0, &threadfunc, (LPVOID)&a, 0, &dwID);
 
 	// ウィンドウの×ボタンが押されるまでループ
 	while (Novice::ProcessMessage() == 0) {
@@ -78,26 +79,33 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 			b.center.x -= 5;
 		}
 
+		///
 		/// ↓更新処理ここから
-		float distance =
-			sqrtf((float)pow((double)a.center.x - (double)b.center.x, 2) +
-				  (float)pow((double)a.center.y - (double)b.center.y, 2));
+		///
 
-		if (distance <= a.radius+b.radius)
+		float distance = sqrtf((float)pow((double)a.center.x - (double)b.center.x, 2) + (float)pow((double)a.center.y - (double)b.center.y, 2));
+
+		if (distance <= a.radius + b.radius) {
 			color = BLUE;
-		else
+		} else
 			color = RED;
+		///
 		/// ↑更新処理ここまで
+		///
 
+		///
 		/// ↓描画処理ここから
+		///
 		Novice::DrawEllipse((int)a.center.x, (int)a.center.y, (int)a.radius, (int)a.radius, 0.0f, WHITE, kFillModeSolid);
-		Novice::DrawEllipse((int)b.center.x, (int)b.center.y, (int)b.radius, (int)b.radius,0.0f, color, kFillModeSolid);
+		Novice::DrawEllipse((int)b.center.x, (int)b.center.y, (int)b.radius, (int)b.radius, 0.0f, color, kFillModeSolid);
+		///
 		/// ↑描画処理ここまで
+		///
 
-		// フレーム終了
+		// フレームの終了
 		Novice::EndFrame();
 
-		// ESCキーが押されたらループ抜ける
+		// ESCキーが押されたらループを抜ける
 		if (preKeys[DIK_ESCAPE] == 0 && keys[DIK_ESCAPE] != 0) {
 			break;
 		}
@@ -107,86 +115,49 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 	Novice::Finalize();
 
 	// winsock終了
+	closesocket(sock);
 	WSACleanup();
 
 	return 0;
 }
 
 // 通信スレッド関数
-DWORD WINAPI threadfunc(void* test) {
+DWORD WINAPI threadfunc(void* px) {
 
-	SOCKET sConnect;
-	WORD wPort = 8000;
-	int iLen, iRecv;
-	struct sockaddr_in saConnect, saLocal;
+	px;
 
-	test = 0;//引数確認
+	int fromlen, recv_cnt, send_cnt;
+	struct sockaddr_in addr, recv_addr;
 
-	// リスンソケット
-	sWait = socket(PF_INET, SOCK_STREAM, 0);
-
-	ZeroMemory(&saLocal, sizeof(saLocal));
+	// ソケット
+	sock = socket(PF_INET, SOCK_DGRAM, 0);
 
 	// 8000番に接続待機用ソケット作成
-	saLocal.sin_family = AF_INET;
-	saLocal.sin_addr.s_addr = INADDR_ANY;
-	saLocal.sin_port = htons(wPort);
+	ZeroMemory(&addr, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(8000);
+	addr.sin_addr.s_addr = INADDR_ANY;
 
-	if (bind(sWait, (LPSOCKADDR)&saLocal, sizeof(saLocal)) == SOCKET_ERROR) {
-		closesocket(sWait);
-		SetWindowText(hwMain, L"接続待機ソケット失敗");
+	if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+		closesocket(sock);
 		return 1;
 	}
 
-	if (listen(sWait, 2) == SOCKET_ERROR) {
-		closesocket(sWait);
-		SetWindowText(hwMain, L"接続待機ソケット失敗");
-		return 1;
-	}
+	// ソケット作成フラグセット
+	bSocket = true;
 
-	SetWindowText(hwMain, L"接続待機ソケット成功");
+	while (1) {
+		fromlen = sizeof(recv_addr);
+		recv_cnt = send_cnt = 0;
 
-	iLen = sizeof(saConnect);
-
-	sConnect = accept(sWait, (LPSOCKADDR)(&saConnect), &iLen);
-
-	if (sConnect == INVALID_SOCKET) {
-
-		shutdown(sConnect, 2);
-		closesocket(sConnect);
-
-		shutdown(sWait, 2);
-		closesocket(sWait);
-
-		SetWindowText(hwMain, L"ソケット接続失敗");
-
-		return 1;
-	}
-
-	SetWindowText(hwMain, L"ソケット接続成功");
-
-	iRecv = 0;
-
-	while (1)
-	{
 		// データ受け取り
-		int nRcv = recv(sConnect, (char*)&a, sizeof(Circle), 0);
+		recv_cnt = recvfrom(sock, (char*)&a, sizeof(Circle), 0, (struct sockaddr*)&recv_addr, &fromlen);
 
-		if (nRcv == SOCKET_ERROR)
-		{
-			break;
+		while (send_cnt == 0) {
+			// メッセージ送信
+			send_cnt = sendto(sock, (const char*)&b, sizeof(Circle), 0, (struct sockaddr*)&recv_addr, sizeof(recv_addr));
 		}
-
-		// メッセージ送信
-		send(sConnect, (const char*)&b, sizeof(Circle), 0);
 	}
-
-	// ソケットを閉じる
-	timeEndPeriod(1);
-
-	shutdown(sConnect, 2);
-	closesocket(sConnect);
-	closesocket(sWait);
 
 	return 0;
 }
